@@ -30,6 +30,8 @@ import java.util.stream.Collectors;
  */
 public class UiApp extends Application {
 
+    private final QuestionStore store = new QuestionStore();
+
     // ===== In-memory structures that mirror the DB tables =====
     static class Category { int id; String name; }
     static class Question { int id; String text; String difficulty; }
@@ -67,8 +69,10 @@ public class UiApp extends Application {
         Button btnDel   = new Button("Delete Selected");
         Button btnBuild = new Button("Build Exam…");
 
-        btnLoad.setOnAction(e -> loadDemo());
+        btnLoad.setOnAction(e -> loadFromDatabase());
+
         btnAdd.setOnAction(e -> openAddOrEditDialog(stage, null));
+
         btnEdit.setOnAction(e -> {
             QuestionRow sel = table.getSelectionModel().getSelectedItem();
             if (sel==null){warn("Select a row.");return;}
@@ -94,6 +98,20 @@ public class UiApp extends Application {
         BorderPane root = new BorderPane(); root.setTop(top); root.setCenter(table);
         BorderPane.setMargin(table, new Insets(10));
         stage.setScene(new Scene(root, 1080, 560)); stage.show();
+    }
+
+    private void loadFromDatabase() {
+        data.clear();
+        try (var c = Database.get()) {
+            var questions = store.findAll(c);
+            for (var q : questions) {
+                data.add(new QuestionRow(q.id, q.difficulty, q.text, List.of("(from DB)"))); // 暂时只显示DB来源
+            }
+            info("Loaded " + questions.size() + " questions from database.");
+        } catch (Exception ex) {
+            warn("Failed to load from DB: " + ex.getMessage());
+            ex.printStackTrace();
+        }
     }
 
     // ===== Demo data (simulates SELECTs) =====
@@ -168,15 +186,33 @@ public class UiApp extends Application {
             List<Integer> catIds = new ArrayList<>();
             for (String n : selected){ if (!n.isBlank()) catIds.add(ensureCategory(n.trim())); }
 
-            if (existing==null){
-                int qid = insertQuestion(text, diff);
-                for (int cid: catIds) linkQC(qid, cid);
+//            if (existing==null){
+//                int qid = insertQuestion(text, diff);
+//                for (int cid: catIds) linkQC(qid, cid);
+//            } else {
+//                // update question
+//                Question q = Questions.get(existing.getId()); q.text=text; q.difficulty=diff;
+//                // relink
+//                Question_Categories.removeIf(x->x.question_id==q.id);
+//                for (int cid: catIds) linkQC(q.id, cid);
+//            }
+            if (existing == null) {
+                try (var c = Database.get()) {
+                    int qid = store.insert(c, text, "short", diff); // 先用 type="short" 或按你实际UI字段
+                    info("Question saved to database (ID: " + qid + ")");
+                } catch (Exception ex) {
+                    warn("Failed to save question: " + ex.getMessage());
+                    ex.printStackTrace();
+                }
             } else {
-                // update question
-                Question q = Questions.get(existing.getId()); q.text=text; q.difficulty=diff;
-                // relink
-                Question_Categories.removeIf(x->x.question_id==q.id);
-                for (int cid: catIds) linkQC(q.id, cid);
+                // 以后可添加“update”功能
+                    try (var c = Database.get()) {
+                        store.update(c, existing.getId(), text, "short", diff);
+                        info("Question updated (ID: " + existing.getId() + ")");
+                        loadFromDatabase();
+                    } catch (Exception ex) {
+                        warn("Failed to update: " + ex.getMessage());
+                    }
             }
             refreshTable();
             return true;
@@ -185,12 +221,28 @@ public class UiApp extends Application {
         dlg.showAndWait();
     }
 
-    private void deleteSelected(){
-        QuestionRow sel = table.getSelectionModel().getSelectedItem(); if (sel==null){warn("Select a row."); return;}
-        Alert a = new Alert(Alert.AlertType.CONFIRMATION, "Delete question #"+sel.getId()+"?", ButtonType.OK, ButtonType.CANCEL);
+    private void deleteSelected() {
+        QuestionRow sel = table.getSelectionModel().getSelectedItem();
+        if (sel == null) { warn("Select a row."); return; }
+
+        Alert a = new Alert(Alert.AlertType.CONFIRMATION,
+                "Delete question #" + sel.getId() + "?",
+                ButtonType.OK, ButtonType.CANCEL);
         a.setHeaderText(null);
-        a.showAndWait().ifPresent(bt->{ if (bt==ButtonType.OK){ Questions.remove(sel.getId()); Question_Categories.removeIf(x->x.question_id==sel.getId()); refreshTable(); }});
+        a.showAndWait().ifPresent(bt -> {
+            if (bt == ButtonType.OK) {
+                try (var c = Database.get()) {
+                    store.delete(c, sel.getId());
+                    info("Question deleted (ID: " + sel.getId() + ")");
+                    loadFromDatabase();
+                } catch (Exception ex) {
+                    warn("Failed to delete: " + ex.getMessage());
+                    ex.printStackTrace();
+                }
+            }
+        });
     }
+
 
     // ===== Build Exam (random pick per category) =====
     private void openBuildDialog(Stage owner){
