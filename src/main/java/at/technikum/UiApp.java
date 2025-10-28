@@ -16,6 +16,7 @@ import javafx.stage.Stage;
 
 import java.sql.*;
 import java.util.*;
+import java.util.Date;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -60,6 +61,7 @@ public class UiApp extends Application {
         Button btnAdd   = new Button("Add Question");
         Button btnEdit  = new Button("Edit Selected");
         Button btnDel   = new Button("Delete Selected");
+        Button btnGenExam = new Button("Generate Exam");
 
         btnLoad.setOnAction(e -> loadFromDatabase());
         btnAdd.setOnAction(e -> openAddOrEditDialog(stage, null));
@@ -69,8 +71,29 @@ public class UiApp extends Application {
             openAddOrEditDialog(stage, sel);
         });
         btnDel.setOnAction(e -> deleteSelected());
+        btnGenExam.setOnAction(e -> {
+            TextInputDialog dialog = new TextInputDialog("Exam " + new Date());
+            dialog.setTitle("New Exam");
+            dialog.setHeaderText("Create a New Exam");
+            dialog.setContentText("Enter exam name:");
+            Optional<String> result = dialog.showAndWait();
+            result.ifPresent(name -> {
+                if (name.trim().isEmpty()) {
+                    warn("Exam name cannot be empty.");
+                } else {
+                    // Category selection dialog logic
+                    List<String> selectedCategories = showCategorySelectionDialog(stage);
+                    if (selectedCategories.isEmpty()) {
+                        warn("No categories selected.");
+                    } else {
+                        // info("Selected categories: " + String.join(", ", selectedCategories));
+                        openDifficultySelectionDialog(stage, name, selectedCategories);
+                    }
+                }
+            });
+        });
 
-        HBox top = new HBox(10, btnLoad, btnAdd, btnEdit, btnDel);
+        HBox top = new HBox(10, btnLoad, btnAdd, btnEdit, btnDel, btnGenExam);
         top.setPadding(new Insets(10)); top.setAlignment(Pos.CENTER_LEFT);
 
         TableColumn<QuestionRow, Number> cId = new TableColumn<>("ID");
@@ -320,4 +343,175 @@ public class UiApp extends Application {
     }
 
     public static void main(String[] args){ launch(args); }
+    // ===== Category Selection Dialog =====
+    private List<String> showCategorySelectionDialog(Stage owner) {
+        Dialog<List<String>> dialog = new Dialog<>();
+        dialog.initOwner(owner);
+        dialog.initModality(Modality.WINDOW_MODAL);
+        dialog.setTitle("Select Categories");
+        dialog.setHeaderText("Choose categories for the exam:");
+
+        ObservableList<String> allCats = FXCollections.observableArrayList(Categories.values().stream()
+                .map(c -> c.name).sorted().toList());
+        ListView<String> listView = new ListView<>(allCats);
+        Set<String> selectedCatsInDialog = new HashSet<>();
+        listView.setCellFactory(CheckBoxListCell.forListView(item -> {
+            SimpleBooleanProperty prop = new SimpleBooleanProperty(false);
+            prop.addListener((obs, wasSelected, isNowSelected) -> {
+                if (isNowSelected) selectedCatsInDialog.add(item);
+                else selectedCatsInDialog.remove(item);
+            });
+            return prop;
+        }));
+        listView.setPrefHeight(200);
+        dialog.getDialogPane().setContent(listView);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+
+        dialog.setResultConverter(bt -> {
+            if (bt == ButtonType.OK) {
+                return new ArrayList<>(selectedCatsInDialog);
+            }
+            return Collections.emptyList();
+        });
+
+        Optional<List<String>> result = dialog.showAndWait();
+        return result.orElse(Collections.emptyList());
+    }
+
+    private void openDifficultySelectionDialog(Stage owner, String examName, List<String> selectedCategories) {
+        Dialog<Boolean> dialog = new Dialog<>();
+        dialog.initOwner(owner);
+        dialog.initModality(Modality.WINDOW_MODAL);
+        dialog.setTitle("Select Difficulty Counts");
+        dialog.setHeaderText("Specify number of questions per difficulty for each category:");
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(10));
+
+        Map<String, Spinner<Integer>> easySpinners = new HashMap<>();
+        Map<String, Spinner<Integer>> medSpinners = new HashMap<>();
+        Map<String, Spinner<Integer>> hardSpinners = new HashMap<>();
+
+        int row = 0;
+        for (String cat : selectedCategories) {
+            grid.add(new Label(cat + ":"), 0, row);
+
+            Spinner<Integer> spEasy = new Spinner<>(0, 50, 0);
+            Spinner<Integer> spMed = new Spinner<>(0, 50, 0);
+            Spinner<Integer> spHard = new Spinner<>(0, 50, 0);
+            spEasy.setEditable(true); spMed.setEditable(true); spHard.setEditable(true);
+
+            easySpinners.put(cat, spEasy);
+            medSpinners.put(cat, spMed);
+            hardSpinners.put(cat, spHard);
+
+            grid.add(new Label("Easy:"), 1, row);
+            grid.add(spEasy, 2, row);
+            grid.add(new Label("Medium:"), 3, row);
+            grid.add(spMed, 4, row);
+            grid.add(new Label("Hard:"), 5, row);
+            grid.add(spHard, 6, row);
+            row++;
+        }
+
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        // Add "Back" button
+        ButtonType backButtonType = new ButtonType("Back", ButtonBar.ButtonData.BACK_PREVIOUS);
+        dialog.getDialogPane().getButtonTypes().add(backButtonType);
+
+        dialog.setResultConverter(bt -> {
+            if (bt == ButtonType.OK) {
+                // Gather selection into a nested map: category -> {difficulty -> count}
+                Map<String, Map<String, Integer>> selections = new LinkedHashMap<>();
+                for (String cat : selectedCategories) {
+                    Map<String, Integer> diffs = new LinkedHashMap<>();
+                    diffs.put("Easy", easySpinners.get(cat).getValue());
+                    diffs.put("Medium", medSpinners.get(cat).getValue());
+                    diffs.put("Hard", hardSpinners.get(cat).getValue());
+                    selections.put(cat, diffs);
+                }
+                generateAndExportExam(examName, selections);
+                return true;
+            } else if (bt.getButtonData() == ButtonBar.ButtonData.BACK_PREVIOUS) {
+                // Show category selection dialog again
+                List<String> newSelection = showCategorySelectionDialog(owner);
+                if (!newSelection.isEmpty()) {
+                    openDifficultySelectionDialog(owner, examName, newSelection);
+                }
+            }
+            return false;
+        });
+
+        dialog.showAndWait();
+    }
+
+    // ===== Exam Generation and Export =====
+    /**
+     * Generates an exam based on the given selections and exports it as a PDF.
+     * @param examName The exam name.
+     * @param selections Map of category name -> (difficulty -> count)
+     */
+    private void generateAndExportExam(String examName, Map<String, Map<String, Integer>> selections) {
+        try (Connection conn = Database.get()) {
+            // Insert exam (using 'title' instead of 'name' as per DB schema)
+            PreparedStatement psExam = conn.prepareStatement("INSERT INTO Exams(title, created_at) VALUES(?, ?)", Statement.RETURN_GENERATED_KEYS);
+            psExam.setString(1, examName);
+            psExam.setString(2, new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()));
+            psExam.executeUpdate();
+            ResultSet rsExam = psExam.getGeneratedKeys();
+            if (!rsExam.next()) { warn("Failed to insert exam."); return; }
+            int examId = rsExam.getInt(1);
+
+            List<String> lines = new ArrayList<>();
+            int position = 1;
+
+            for (var entry : selections.entrySet()) {
+                String catName = entry.getKey();
+                int catId = Categories.values().stream().filter(c -> c.name.equals(catName)).map(c -> c.id).findFirst().orElse(-1);
+                if (catId == -1) continue;
+
+                for (var diff : List.of("Easy", "Medium", "Hard")) {
+                    int count = entry.getValue().getOrDefault(diff, 0);
+                    if (count <= 0) continue;
+
+                    // Randomly select matching questions
+                    PreparedStatement ps = conn.prepareStatement("""
+                        SELECT q.id, q.text FROM Questions q
+                        JOIN Question_Categories qc ON q.id = qc.question_id
+                        WHERE qc.category_id = ? AND q.difficulty = ?
+                        ORDER BY RANDOM() LIMIT ?
+                    """);
+                    ps.setInt(1, catId);
+                    ps.setString(2, diff);
+                    ps.setInt(3, count);
+                    ResultSet rs = ps.executeQuery();
+                    while (rs.next()) {
+                        int qid = rs.getInt("id");
+                        String text = rs.getString("text");
+                        lines.add(position + ". " + text);
+                        PreparedStatement psInsert = conn.prepareStatement("INSERT INTO Exam_Questions(exam_id, question_id, order_index) VALUES (?, ?, ?)");
+                        psInsert.setInt(1, examId);
+                        psInsert.setInt(2, qid);
+                        psInsert.setInt(3, position++);
+                        psInsert.executeUpdate();
+                    }
+                }
+            }
+
+            if (lines.isEmpty()) {
+                warn("No questions matched your selection.");
+                return;
+            }
+
+            // Generate PDF
+            PDFGenerator.generate(examName, lines);
+            info("Exam created and saved as PDF.");
+        } catch (Exception ex) {
+            warn("Error generating exam: " + ex.getMessage());
+            ex.printStackTrace();
+        }
+    }
 }
