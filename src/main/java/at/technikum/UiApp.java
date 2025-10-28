@@ -1,12 +1,14 @@
 package at.technikum;
 
 import javafx.application.Application;
+import javafx.beans.property.SimpleBooleanProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.control.cell.CheckBoxListCell;
 import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.*;
 import javafx.stage.Modality;
@@ -21,7 +23,7 @@ public class UiApp extends Application {
 
     private final QuestionStore store = new QuestionStore();
 
-    // ===== In-memory structures =====
+    // ===== Data structures =====
     static class Category { int id; String name; }
     static class Question { int id; String text; String difficulty; }
     static class QuestionCategory { int question_id; int category_id; }
@@ -31,19 +33,20 @@ public class UiApp extends Application {
     private final Map<Integer, Category> Categories = new LinkedHashMap<>();
     private final Map<Integer, Question> Questions = new LinkedHashMap<>();
     private final List<QuestionCategory> Question_Categories = new ArrayList<>();
-    private final Map<Integer, Exam> Exams = new LinkedHashMap<>();
-    private final List<ExamQuestion> Exam_Questions = new ArrayList<>();
 
     private final AtomicInteger catSeq = new AtomicInteger(1);
     private final AtomicInteger qSeq   = new AtomicInteger(1);
-    private final AtomicInteger examSeq= new AtomicInteger(1);
 
     // ===== Table model =====
     public static class QuestionRow {
         private final int id; private final String difficulty; private final String text; private final List<String> categories;
-        public QuestionRow(int id, String difficulty, String text, List<String> categories){this.id=id;this.difficulty=difficulty;this.text=text;this.categories=categories;}
-        public int getId(){return id;} public String getDifficulty(){return difficulty;}
-        public String getText(){return text;} public String getCategoriesCsv(){return String.join(", ", categories);}
+        public QuestionRow(int id, String difficulty, String text, List<String> categories){
+            this.id=id;this.difficulty=difficulty;this.text=text;this.categories=categories;
+        }
+        public int getId(){return id;}
+        public String getDifficulty(){return difficulty;}
+        public String getText(){return text;}
+        public String getCategoriesCsv(){return String.join(", ", categories);}
         public List<String> getCategories(){return categories;}
     }
 
@@ -86,7 +89,7 @@ public class UiApp extends Application {
         stage.setScene(new Scene(root, 1080, 560)); stage.show();
     }
 
-    // ===== Load from DB =====
+    // ===== Load data from DB =====
     private void loadFromDatabase() {
         data.clear();
         loadCategoriesFromDb();
@@ -96,8 +99,7 @@ public class UiApp extends Application {
 
             Map<Integer, List<String>> catsByQuestion = new HashMap<>();
             try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT qc.question_id, c.name " +
-                            "FROM Question_Categories qc " +
+                    "SELECT qc.question_id, c.name FROM Question_Categories qc " +
                             "JOIN Categories c ON qc.category_id = c.id")) {
                 ResultSet rs = ps.executeQuery();
                 while (rs.next()) {
@@ -126,21 +128,31 @@ public class UiApp extends Application {
 
         TextArea taText = new TextArea(existing == null ? "" : existing.getText());
         taText.setPrefRowCount(6);
+
         ComboBox<String> cbDiff = new ComboBox<>(FXCollections.observableArrayList("Easy","Medium","Hard"));
         cbDiff.getSelectionModel().select(existing == null ? 0 :
                 switch(existing.getDifficulty()){case "Medium"->1; case "Hard"->2; default->0;});
 
-        ListView<String> lvCats = new ListView<>();
-        lvCats.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
-        ObservableList<String> allCats = FXCollections.observableArrayList(Categories.values().stream().map(c -> c.name).sorted().toList());
-        lvCats.setItems(allCats);
-        if (existing != null) {
-            for (String n : existing.getCategories()) lvCats.getSelectionModel().select(n);
-        }
+        // ==== New intuitive multi-select with CheckBoxes ====
+        ObservableList<String> allCats = FXCollections.observableArrayList(Categories.values().stream()
+                .map(c -> c.name).sorted().toList());
+        ListView<String> lvCats = new ListView<>(allCats);
+        lvCats.setCellFactory(CheckBoxListCell.forListView(item -> {
+            SimpleBooleanProperty prop = new SimpleBooleanProperty();
+            prop.addListener((obs, wasSelected, isNowSelected) -> {
+                if (isNowSelected && !selectedCats.contains(item)) selectedCats.add(item);
+                else if (!isNowSelected) selectedCats.remove(item);
+            });
+            prop.set(selectedCats.contains(item));
+            return prop;
+        }));
+        lvCats.setPrefHeight(150);
 
-        TextField tfNewCat = new TextField(); tfNewCat.setPromptText("Add new category then press +");
+        // Collect selected categories for saving
+        selectedCats.clear();
+        if (existing != null) selectedCats.addAll(existing.getCategories());
 
-        // ✅ 新增两个按钮：+ 添加类别，– 删除类别
+        TextField tfNewCat = new TextField(); tfNewCat.setPromptText("Add new category");
         Button btnAddCat = new Button("+");
         btnAddCat.setOnAction(e -> {
             String n = opt(tfNewCat.getText());
@@ -158,30 +170,23 @@ public class UiApp extends Application {
         Button btnDelCat = new Button("–");
         btnDelCat.setOnAction(e -> {
             String selected = lvCats.getSelectionModel().getSelectedItem();
-            if (selected == null) {
-                warn("Select a category to delete.");
-                return;
+            if (selected == null) { warn("Select a category to delete."); return; }
+            if (deleteCategoryFromDb(selected)) {
+                allCats.remove(selected);
+                selectedCats.remove(selected);
+                info("Category deleted: " + selected);
             }
-
-            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
-                    "Delete category '" + selected + "'?", ButtonType.OK, ButtonType.CANCEL);
-            confirm.setHeaderText(null);
-            confirm.showAndWait().ifPresent(bt -> {
-                if (bt == ButtonType.OK) {
-                    if (deleteCategoryFromDb(selected)) {
-                        allCats.remove(selected);
-                        FXCollections.sort(allCats);
-                        info("Category deleted: " + selected);
-                    }
-                }
-            });
         });
+
+        Label lblHint = new Label("Select one or more categories below:");
+        lblHint.setStyle("-fx-text-fill: #666; -fx-font-size: 11px;");
 
         GridPane gp = new GridPane(); gp.setHgap(10); gp.setVgap(10); gp.setPadding(new Insets(10));
         gp.addRow(0, new Label("Difficulty:"), cbDiff);
         gp.add(new Label("Text:"),0,1); gp.add(taText,1,1);
-        gp.add(new Label("Categories:"),0,2); gp.add(lvCats,1,2);
-        gp.add(new HBox(6, tfNewCat, btnAddCat, btnDelCat),1,3);
+        gp.add(lblHint,1,2);
+        gp.add(lvCats,1,3);
+        gp.add(new HBox(6, tfNewCat, btnAddCat, btnDelCat),1,4);
 
         dlg.getDialogPane().setContent(gp);
         dlg.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
@@ -191,9 +196,9 @@ public class UiApp extends Application {
             String text = opt(taText.getText());
             if (text.isEmpty()) { warn("Text required."); return false; }
             String diff = cbDiff.getValue();
-            List<String> selected = new ArrayList<>(lvCats.getSelectionModel().getSelectedItems());
+
             List<Integer> catIds = new ArrayList<>();
-            for (String n : selected) if (!n.isBlank()) catIds.add(ensureCategory(n.trim()));
+            for (String n : selectedCats) if (!n.isBlank()) catIds.add(ensureCategory(n.trim()));
 
             if (existing == null) {
                 try (var c = Database.get()) {
@@ -214,6 +219,9 @@ public class UiApp extends Application {
         });
         dlg.showAndWait();
     }
+
+    // Global variable for selected categories
+    private final Set<String> selectedCats = new HashSet<>();
 
     private void deleteSelected() {
         QuestionRow sel = table.getSelectionModel().getSelectedItem();
@@ -236,7 +244,7 @@ public class UiApp extends Application {
         });
     }
 
-    // ===== Category helper =====
+    // ===== Category helpers =====
     private void loadCategoriesFromDb() {
         Categories.clear();
         try (var c = Database.get()) {
@@ -274,13 +282,10 @@ public class UiApp extends Application {
         return 0;
     }
 
-    // ✅ 新增：删除类别函数（带安全检查）
     private boolean deleteCategoryFromDb(String name) {
         try (var c = Database.get()) {
-            // 检查该类别是否被使用
             PreparedStatement check = c.prepareStatement("""
-                SELECT COUNT(*) AS cnt
-                FROM Question_Categories qc
+                SELECT COUNT(*) AS cnt FROM Question_Categories qc
                 JOIN Categories c2 ON qc.category_id = c2.id
                 WHERE LOWER(c2.name) = LOWER(?)
             """);
