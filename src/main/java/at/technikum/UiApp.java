@@ -15,7 +15,7 @@ import javafx.stage.Stage;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
-
+import java.sql.*;
 /**
  * PURE UI MOCK (no JDBC/DAO) — but aligned with DB schema/flows
  * ------------------------------------------------------------
@@ -102,6 +102,7 @@ public class UiApp extends Application {
 
     private void loadFromDatabase() {
         data.clear();
+        loadCategoriesFromDb();
         try (var c = Database.get()) {
             var questions = store.findAll(c);
             for (var q : questions) {
@@ -165,8 +166,20 @@ public class UiApp extends Application {
         if (existing!=null){ for (String n: existing.getCategories()) lvCats.getSelectionModel().select(n); }
 
         TextField tfNewCat = new TextField(); tfNewCat.setPromptText("Add new category then press +");
-        Button btnAddCat = new Button("+"); btnAddCat.setOnAction(e->{ String n = opt(tfNewCat.getText()); if(!n.isEmpty() && !allCats.contains(n)){ allCats.add(n); FXCollections.sort(allCats); } tfNewCat.clear(); });
-
+        //Button btnAddCat = new Button("+"); btnAddCat.setOnAction(e->{ String n = opt(tfNewCat.getText()); if(!n.isEmpty() && !allCats.contains(n)){ allCats.add(n); FXCollections.sort(allCats); } tfNewCat.clear(); });
+        Button btnAddCat = new Button("+");
+        btnAddCat.setOnAction(e -> {
+            String n = opt(tfNewCat.getText());
+            if (!n.isEmpty() && !allCats.contains(n)) {
+                // 调用数据库插入方法
+                int id = insertCategoryIntoDb(n);
+                if (id > 0) {
+                    allCats.add(n);
+                    FXCollections.sort(allCats);
+                }
+            }
+            tfNewCat.clear();
+        });
         GridPane gp = new GridPane(); gp.setHgap(10); gp.setVgap(10); gp.setPadding(new Insets(10));
         gp.addRow(0, new Label("Difficulty:"), cbDiff);
         gp.add(new Label("Text:"),0,1); gp.add(taText,1,1);
@@ -249,7 +262,7 @@ public class UiApp extends Application {
         if (Categories.isEmpty()){ warn("No categories."); return; }
         Dialog<Boolean> dlg = new Dialog<>(); dlg.initOwner(owner); dlg.initModality(Modality.WINDOW_MODAL); dlg.setTitle("Build Exam");
 
-        TextField tfName = new TextField("Exam " + new Date());
+        TextField tfName = new TextField("Exam " + new java.util.Date());
         GridPane gp = new GridPane(); gp.setHgap(10); gp.setVgap(8); gp.setPadding(new Insets(10));
         gp.addRow(0, new Label("Exam name:"), tfName);
         gp.add(new Label("Per-category counts:"), 0, 1);
@@ -293,18 +306,74 @@ public class UiApp extends Application {
 
     // ===== In-memory helpers that mimic INSERTs =====
     private int insertCategory(String name){ int id = catSeq.getAndIncrement(); Category c = new Category(); c.id=id; c.name=name; Categories.put(id, c); return id; }
-    private int ensureCategory(String name){ return Categories.values().stream().filter(c->c.name.equalsIgnoreCase(name)).map(c->c.id).findFirst().orElseGet(() -> insertCategory(name)); }
+    private int ensureCategory(String name) {
+        return insertCategoryIntoDb(name);
+    }
+    //private int ensureCategory(String name){ return Categories.values().stream().filter(c->c.name.equalsIgnoreCase(name)).map(c->c.id).findFirst().orElseGet(() -> insertCategory(name)); }
     private int insertQuestion(String text, String difficulty){ int id = qSeq.getAndIncrement(); Question q = new Question(); q.id=id; q.text=text; q.difficulty=difficulty; Questions.put(id, q); return id; }
     private void linkQC(int qid, int cid){ QuestionCategory qc = new QuestionCategory(); qc.question_id=qid; qc.category_id=cid; // avoid dup
         boolean exists = Question_Categories.stream().anyMatch(x->x.question_id==qid && x.category_id==cid);
         if (!exists) Question_Categories.add(qc);
     }
-    private int insertExam(String name){ int id = examSeq.getAndIncrement(); Exam e = new Exam(); e.id=id; e.name=name; e.created_at=new Date().toString(); Exams.put(id,e); return id; }
+    private int insertExam(String name){ int id = examSeq.getAndIncrement(); Exam e = new Exam(); e.id=id; e.name=name; e.created_at=new java.util.Date().toString(); Exams.put(id,e); return id; }
     private void insertExamQuestion(int examId, int qid, int pos){ ExamQuestion eq = new ExamQuestion(); eq.exam_id=examId; eq.question_id=qid; eq.position=pos; Exam_Questions.add(eq);}
 
     // ===== Utils =====
     private String opt(String s){ return s==null?"":s.trim(); }
     private void info(String msg){ alert(Alert.AlertType.INFORMATION, msg);} private void warn(String msg){ alert(Alert.AlertType.WARNING, msg);} private void alert(Alert.AlertType t,String msg){ Alert a=new Alert(t,msg,ButtonType.OK); a.setHeaderText(null); a.showAndWait(); }
+    /** 从数据库加载所有类别到 Categories map */
+    private void loadCategoriesFromDb() {
+        Categories.clear();
+        try (var c = Database.get()) {
+            PreparedStatement ps = c.prepareStatement(
+                    "SELECT id, name FROM Categories ORDER BY name");
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Category cat = new Category();
+                cat.id = rs.getInt("id");
+                cat.name = rs.getString("name");
+                Categories.put(cat.id, cat);
+            }
+        } catch (Exception ex) {
+            warn("Failed to load categories: " + ex.getMessage());
+            ex.printStackTrace();
+        }
+    }
 
+    /**
+     * 向数据库插入类别（若不存在），并返回 ID。
+     * 同时把新建的类别放入 Categories map。
+     */
+    private int insertCategoryIntoDb(String name) {
+        try (var c = Database.get()) {
+            // 判断是否已存在（忽略大小写）
+            PreparedStatement find = c.prepareStatement(
+                    "SELECT id FROM Categories WHERE LOWER(name) = LOWER(?)");
+            find.setString(1, name);
+            ResultSet fr = find.executeQuery();
+            if (fr.next()) {
+                return fr.getInt("id");
+            }
+            // 插入新记录
+            PreparedStatement ps = c.prepareStatement(
+                    "INSERT INTO Categories(name) VALUES(?)",
+                    Statement.RETURN_GENERATED_KEYS);
+            ps.setString(1, name);
+            ps.executeUpdate();
+            ResultSet rs = ps.getGeneratedKeys();
+            if (rs.next()) {
+                int newId = rs.getInt(1);
+                Category cat = new Category();
+                cat.id = newId;
+                cat.name = name;
+                Categories.put(newId, cat);  // 更新内存映射
+                return newId;
+            }
+        } catch (Exception ex) {
+            warn("Failed to insert category: " + ex.getMessage());
+            ex.printStackTrace();
+        }
+        return 0;
+    }
     public static void main(String[] args){ launch(args); }
 }
