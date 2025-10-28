@@ -102,12 +102,44 @@ public class UiApp extends Application {
 
     private void loadFromDatabase() {
         data.clear();
-        loadCategoriesFromDb();
+        Categories.clear();
+        Question_Categories.clear();
+
         try (var c = Database.get()) {
+            // Load all categories
+            PreparedStatement catStmt = c.prepareStatement("SELECT id, name FROM Categories");
+            ResultSet catRs = catStmt.executeQuery();
+            while (catRs.next()) {
+                Category cat = new Category();
+                cat.id = catRs.getInt("id");
+                cat.name = catRs.getString("name");
+                Categories.put(cat.id, cat);
+            }
+
+            // Load all question-category links
+            PreparedStatement qcStmt = c.prepareStatement("SELECT question_id, category_id FROM Question_Categories");
+            ResultSet qcRs = qcStmt.executeQuery();
+            while (qcRs.next()) {
+                QuestionCategory qc = new QuestionCategory();
+                qc.question_id = qcRs.getInt("question_id");
+                qc.category_id = qcRs.getInt("category_id");
+                Question_Categories.add(qc);
+            }
+
+            // Load all questions and their category names
             var questions = store.findAll(c);
             for (var q : questions) {
-                data.add(new QuestionRow(q.id, q.difficulty, q.text, List.of("(from DB)"))); // 暂时只显示DB来源
+                List<String> catNames = Question_Categories.stream()
+                        .filter(qc -> qc.question_id == q.id)
+                        .map(qc -> Categories.get(qc.category_id))
+                        .filter(Objects::nonNull)
+                        .map(cat -> cat.name)
+                        .sorted()
+                        .collect(Collectors.toList());
+
+                data.add(new QuestionRow(q.id, q.difficulty, q.text, catNames));
             }
+
             info("Loaded " + questions.size() + " questions from database.");
         } catch (Exception ex) {
             warn("Failed to load from DB: " + ex.getMessage());
@@ -253,8 +285,18 @@ public class UiApp extends Application {
 //            }
             if (existing == null) {
                 try (var c = Database.get()) {
-                    int qid = store.insert(c, text, "short", diff); // 先用 type="short" 或按你实际UI字段
+                    int qid = store.insert(c, text, "short", diff); // 插入 Questions
                     info("Question saved to database (ID: " + qid + ")");
+
+                    // 插入 Question_Categories 关联
+                    for (int cid : catIds) {
+                        PreparedStatement ps = c.prepareStatement(
+                            "INSERT INTO Question_Categories(question_id, category_id) VALUES (?, ?)");
+                        ps.setInt(1, qid);
+                        ps.setInt(2, cid);
+                        ps.executeUpdate();
+                    }
+                    info("Linked question to " + catIds.size() + " categories.");
                 } catch (Exception ex) {
                     warn("Failed to save question: " + ex.getMessage());
                     ex.printStackTrace();
