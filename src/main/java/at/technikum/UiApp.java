@@ -180,11 +180,53 @@ public class UiApp extends Application {
             }
             tfNewCat.clear();
         });
+        Button btnDelCat = new Button("–");
+        btnDelCat.setOnAction(e -> {
+            String selected = lvCats.getSelectionModel().getSelectedItem();
+            if (selected == null) {
+                warn("Select a category to delete.");
+                return;
+            }
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
+                    "Delete category '" + selected + "'?", ButtonType.OK, ButtonType.CANCEL);
+            confirm.setHeaderText(null);
+            confirm.showAndWait().ifPresent(bt -> {
+                if (bt == ButtonType.OK) {
+                    try (var conn = Database.get()) {
+                        PreparedStatement ps1 = conn.prepareStatement(
+                                "DELETE FROM Question_Categories WHERE category_id = (SELECT id FROM Categories WHERE name = ?)");
+                        ps1.setString(1, selected);
+                        ps1.executeUpdate();
+
+                        PreparedStatement ps2 = conn.prepareStatement(
+                                "DELETE FROM Categories WHERE name = ?");
+                        ps2.setString(1, selected);
+                        ps2.executeUpdate();
+
+                        // Update in-memory map and list
+                        Integer idToRemove = Categories.entrySet().stream()
+                                .filter(e2 -> e2.getValue().name.equals(selected))
+                                .map(Map.Entry::getKey)
+                                .findFirst().orElse(null);
+                        if (idToRemove != null) {
+                            Categories.remove(idToRemove);
+                            Question_Categories.removeIf(qc -> qc.category_id == idToRemove);
+                        }
+
+                        allCats.remove(selected);
+                        FXCollections.sort(allCats);
+                    } catch (Exception ex) {
+                        warn("Failed to delete category: " + ex.getMessage());
+                        ex.printStackTrace();
+                    }
+                }
+            });
+        });
         GridPane gp = new GridPane(); gp.setHgap(10); gp.setVgap(10); gp.setPadding(new Insets(10));
         gp.addRow(0, new Label("Difficulty:"), cbDiff);
         gp.add(new Label("Text:"),0,1); gp.add(taText,1,1);
         gp.add(new Label("Categories:"),0,2); gp.add(lvCats,1,2);
-        gp.add(new HBox(6, tfNewCat, btnAddCat),1,3);
+        gp.add(new HBox(6, tfNewCat, btnAddCat, btnDelCat),1,3);
 
         dlg.getDialogPane().setContent(gp);
         dlg.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
