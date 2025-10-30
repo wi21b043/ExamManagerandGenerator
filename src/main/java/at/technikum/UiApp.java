@@ -13,11 +13,15 @@ import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.*;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
+import javafx.scene.input.MouseButton;
+import javafx.scene.control.ContextMenu;
+import javafx.scene.control.MenuItem;
+
 
 import java.sql.*;
 import java.util.*;
-import java.util.Date;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Date;
 import java.util.stream.Collectors;
 
 public class UiApp extends Application {
@@ -81,12 +85,10 @@ public class UiApp extends Application {
                 if (name.trim().isEmpty()) {
                     warn("Exam name cannot be empty.");
                 } else {
-                    // Category selection dialog logic
                     List<String> selectedCategories = showCategorySelectionDialog(stage);
                     if (selectedCategories.isEmpty()) {
                         warn("No categories selected.");
                     } else {
-                        // info("Selected categories: " + String.join(", ", selectedCategories));
                         openDifficultySelectionDialog(stage, name, selectedCategories);
                     }
                 }
@@ -106,6 +108,14 @@ public class UiApp extends Application {
         cText.setCellValueFactory(new PropertyValueFactory<>("text"));
         table.getColumns().addAll(cId, cDiff, cCat, cText);
         table.setItems(data);
+
+        // === 添加右键菜单 ===
+        MenuItem viewVersions = new MenuItem("View Versions");
+        viewVersions.setOnAction(e -> showVersionHistory());
+
+        ContextMenu contextMenu = new ContextMenu(viewVersions);
+        table.setContextMenu(contextMenu);
+
 
         BorderPane root = new BorderPane(); root.setTop(top); root.setCenter(table);
         BorderPane.setMargin(table, new Insets(10));
@@ -144,6 +154,8 @@ public class UiApp extends Application {
     }
 
     // ===== Add/Edit Question =====
+    private final Set<String> selectedCats = new HashSet<>();
+
     private void openAddOrEditDialog(Stage owner, QuestionRow existing){
         Dialog<Boolean> dlg = new Dialog<>(); dlg.initOwner(owner);
         dlg.initModality(Modality.WINDOW_MODAL);
@@ -156,7 +168,6 @@ public class UiApp extends Application {
         cbDiff.getSelectionModel().select(existing == null ? 0 :
                 switch(existing.getDifficulty()){case "Medium"->1; case "Hard"->2; default->0;});
 
-        // ==== New intuitive multi-select with CheckBoxes ====
         ObservableList<String> allCats = FXCollections.observableArrayList(Categories.values().stream()
                 .map(c -> c.name).sorted().toList());
         ListView<String> lvCats = new ListView<>(allCats);
@@ -171,7 +182,6 @@ public class UiApp extends Application {
         }));
         lvCats.setPrefHeight(150);
 
-        // Collect selected categories for saving
         selectedCats.clear();
         if (existing != null) selectedCats.addAll(existing.getCategories());
 
@@ -242,9 +252,6 @@ public class UiApp extends Application {
         });
         dlg.showAndWait();
     }
-
-    // Global variable for selected categories
-    private final Set<String> selectedCats = new HashSet<>();
 
     private void deleteSelected() {
         QuestionRow sel = table.getSelectionModel().getSelectedItem();
@@ -343,6 +350,7 @@ public class UiApp extends Application {
     }
 
     public static void main(String[] args){ launch(args); }
+
     // ===== Category Selection Dialog =====
     private List<String> showCategorySelectionDialog(Stage owner) {
         Dialog<List<String>> dialog = new Dialog<>();
@@ -418,13 +426,11 @@ public class UiApp extends Application {
 
         dialog.getDialogPane().setContent(grid);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-        // Add "Back" button
         ButtonType backButtonType = new ButtonType("Back", ButtonBar.ButtonData.BACK_PREVIOUS);
         dialog.getDialogPane().getButtonTypes().add(backButtonType);
 
         dialog.setResultConverter(bt -> {
             if (bt == ButtonType.OK) {
-                // Gather selection into a nested map: category -> {difficulty -> count}
                 Map<String, Map<String, Integer>> selections = new LinkedHashMap<>();
                 for (String cat : selectedCategories) {
                     Map<String, Integer> diffs = new LinkedHashMap<>();
@@ -436,7 +442,6 @@ public class UiApp extends Application {
                 generateAndExportExam(examName, selections);
                 return true;
             } else if (bt.getButtonData() == ButtonBar.ButtonData.BACK_PREVIOUS) {
-                // Show category selection dialog again
                 List<String> newSelection = showCategorySelectionDialog(owner);
                 if (!newSelection.isEmpty()) {
                     openDifficultySelectionDialog(owner, examName, newSelection);
@@ -448,26 +453,30 @@ public class UiApp extends Application {
         dialog.showAndWait();
     }
 
-    // ===== Exam Generation and Export =====
-    /**
-     * Generates an exam based on the given selections and exports it as a PDF.
-     * @param examName The exam name.
-     * @param selections Map of category name -> (difficulty -> count)
-     */
+    // ===== Exam Preview + Replace + Export =====
+    private static class ExamQuestionItem {
+        int id;
+        String text;
+        String difficulty;
+        String category;
+
+        ExamQuestionItem(int id, String text, String diff, String cat) {
+            this.id = id;
+            this.text = text;
+            this.difficulty = diff;
+            this.category = cat;
+        }
+
+        @Override
+        public String toString() {
+            return "[" + difficulty + "] " + text;
+        }
+    }
+
     private void generateAndExportExam(String examName, Map<String, Map<String, Integer>> selections) {
+        List<ExamQuestionItem> previewList = new ArrayList<>();
+
         try (Connection conn = Database.get()) {
-            // Insert exam (using 'title' instead of 'name' as per DB schema)
-            PreparedStatement psExam = conn.prepareStatement("INSERT INTO Exams(title, created_at) VALUES(?, ?)", Statement.RETURN_GENERATED_KEYS);
-            psExam.setString(1, examName);
-            psExam.setString(2, new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()));
-            psExam.executeUpdate();
-            ResultSet rsExam = psExam.getGeneratedKeys();
-            if (!rsExam.next()) { warn("Failed to insert exam."); return; }
-            int examId = rsExam.getInt(1);
-
-            List<String> lines = new ArrayList<>();
-            int position = 1;
-
             for (var entry : selections.entrySet()) {
                 String catName = entry.getKey();
                 int catId = Categories.values().stream().filter(c -> c.name.equals(catName)).map(c -> c.id).findFirst().orElse(-1);
@@ -477,9 +486,9 @@ public class UiApp extends Application {
                     int count = entry.getValue().getOrDefault(diff, 0);
                     if (count <= 0) continue;
 
-                    // Randomly select matching questions
                     PreparedStatement ps = conn.prepareStatement("""
-                        SELECT q.id, q.text FROM Questions q
+                        SELECT q.id, q.text, q.difficulty
+                        FROM Questions q
                         JOIN Question_Categories qc ON q.id = qc.question_id
                         WHERE qc.category_id = ? AND q.difficulty = ?
                         ORDER BY RANDOM() LIMIT ?
@@ -489,30 +498,185 @@ public class UiApp extends Application {
                     ps.setInt(3, count);
                     ResultSet rs = ps.executeQuery();
                     while (rs.next()) {
-                        int qid = rs.getInt("id");
-                        String text = rs.getString("text");
-                        lines.add(position + ". " + text);
-                        PreparedStatement psInsert = conn.prepareStatement("INSERT INTO Exam_Questions(exam_id, question_id, order_index) VALUES (?, ?, ?)");
-                        psInsert.setInt(1, examId);
-                        psInsert.setInt(2, qid);
-                        psInsert.setInt(3, position++);
-                        psInsert.executeUpdate();
+                        previewList.add(new ExamQuestionItem(
+                                rs.getInt("id"),
+                                rs.getString("text"),
+                                rs.getString("difficulty"),
+                                catName
+                        ));
                     }
                 }
             }
+        } catch (Exception ex) {
+            warn("Error generating preview: " + ex.getMessage());
+            ex.printStackTrace();
+            return;
+        }
 
-            if (lines.isEmpty()) {
-                warn("No questions matched your selection.");
+        if (previewList.isEmpty()) {
+            warn("No questions found for selected parameters.");
+            return;
+        }
+
+        showExamPreview(new Stage(), examName, previewList);
+    }
+
+    private void showExamPreview(Stage owner, String examName, List<ExamQuestionItem> examQuestions) {
+        Stage stage = new Stage();
+        stage.initOwner(owner);
+        stage.initModality(Modality.WINDOW_MODAL);
+        stage.setTitle("Preview Exam: " + examName);
+
+        ListView<ExamQuestionItem> listView = new ListView<>();
+        listView.setCellFactory(param -> new ListCell<>() {
+            private final Button btnReplace = new Button("Replace");
+            private final Label lblText = new Label();
+            private final HBox hbox = new HBox(10, lblText, btnReplace);
+
+            {
+                hbox.setAlignment(Pos.CENTER_LEFT);
+                hbox.setPadding(new Insets(5));
+                lblText.setWrapText(true);
+                btnReplace.setOnAction(e -> {
+                    ExamQuestionItem item = getItem();
+                    if (item != null) {
+                        replaceQuestion(item, listView);
+                    }
+                });
+            }
+
+            @Override
+            protected void updateItem(ExamQuestionItem item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setGraphic(null);
+                } else {
+                    lblText.setText(item.toString() + "  (" + item.category + ")");
+                    setGraphic(hbox);
+                }
+            }
+        });
+        listView.getItems().addAll(examQuestions);
+
+        Button btnExport = new Button("Export to PDF");
+        Button btnCancel = new Button("Cancel");
+
+        btnExport.setOnAction(e -> {
+            try {
+                List<String> lines = new ArrayList<>();
+                int pos = 1;
+                for (ExamQuestionItem item : listView.getItems()) {
+                    lines.add(pos++ + ". " + item.text);
+                }
+                PDFGenerator.generate(stage, examName, lines);
+                info("Exam exported successfully.");
+                stage.close();
+            } catch (Exception ex) {
+                warn("Failed to export PDF: " + ex.getMessage());
+            }
+        });
+
+        btnCancel.setOnAction(e -> stage.close());
+
+        HBox bottom = new HBox(10, btnExport, btnCancel);
+        bottom.setAlignment(Pos.CENTER_RIGHT);
+        bottom.setPadding(new Insets(10));
+
+        BorderPane root = new BorderPane();
+        root.setCenter(listView);
+        root.setBottom(bottom);
+        root.setPadding(new Insets(10));
+
+        stage.setScene(new Scene(root, 800, 500));
+        stage.show();
+    }
+
+    private void replaceQuestion(ExamQuestionItem item, ListView<ExamQuestionItem> listView) {
+        try (Connection conn = Database.get()) {
+            int catId = Categories.values().stream()
+                    .filter(c -> c.name.equals(item.category))
+                    .map(c -> c.id)
+                    .findFirst().orElse(-1);
+            if (catId == -1) return;
+
+            PreparedStatement ps = conn.prepareStatement("""
+                SELECT q.id, q.text, q.difficulty
+                FROM Questions q
+                JOIN Question_Categories qc ON q.id = qc.question_id
+                WHERE qc.category_id = ? AND q.difficulty = ? AND q.id != ?
+                ORDER BY RANDOM() LIMIT 1
+            """);
+            ps.setInt(1, catId);
+            ps.setString(2, item.difficulty);
+            ps.setInt(3, item.id);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                ExamQuestionItem newQ = new ExamQuestionItem(
+                        rs.getInt("id"),
+                        rs.getString("text"),
+                        rs.getString("difficulty"),
+                        item.category
+                );
+                int idx = listView.getItems().indexOf(item);
+                listView.getItems().set(idx, newQ);
+                info("Question replaced successfully.");
+            } else {
+                warn("No alternative question found.");
+            }
+        } catch (Exception ex) {
+            warn("Error replacing question: " + ex.getMessage());
+        }
+    }
+
+    // === 查看版本历史 ===
+    private void showVersionHistory() {
+        QuestionRow selected = table.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            warn("Please select a question first.");
+            return;
+        }
+
+        try (Connection c = Database.get()) {
+            List<QuestionStore.QuestionVersion> versions = store.findVersions(c, selected.getId());
+            if (versions.isEmpty()) {
+                warn("No version history found.");
                 return;
             }
 
-            // Generate PDF
+            Dialog<Void> dlg = new Dialog<>();
+            dlg.setTitle("Version History");
+            dlg.setHeaderText("All versions for question ID " + selected.getId());
 
-            PDFGenerator.generate(new Stage(), examName, lines);
-            info("Exam created and saved as PDF (user selected path).");
+            TableView<QuestionStore.QuestionVersion> tbl = new TableView<>();
+            tbl.setItems(FXCollections.observableArrayList(versions));
+
+            TableColumn<QuestionStore.QuestionVersion, Number> colVer = new TableColumn<>("Version");
+            colVer.setCellValueFactory(new PropertyValueFactory<>("version"));
+
+            TableColumn<QuestionStore.QuestionVersion, String> colDiff = new TableColumn<>("Difficulty");
+            colDiff.setCellValueFactory(new PropertyValueFactory<>("difficulty"));
+
+            TableColumn<QuestionStore.QuestionVersion, String> colCreated = new TableColumn<>("Created");
+            colCreated.setCellValueFactory(new PropertyValueFactory<>("createdAt"));
+
+            TableColumn<QuestionStore.QuestionVersion, String> colUpdated = new TableColumn<>("Updated");
+            colUpdated.setCellValueFactory(new PropertyValueFactory<>("updatedAt"));
+
+            TableColumn<QuestionStore.QuestionVersion, String> colText = new TableColumn<>("Text");
+            colText.setCellValueFactory(new PropertyValueFactory<>("text"));
+            colText.setPrefWidth(400);
+
+            tbl.getColumns().addAll(colVer, colDiff, colCreated, colUpdated, colText);
+            tbl.setPrefHeight(300);
+
+            dlg.getDialogPane().setContent(tbl);
+            dlg.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+            dlg.showAndWait();
+
         } catch (Exception ex) {
-            warn("Error generating exam: " + ex.getMessage());
+            warn("Error loading version history: " + ex.getMessage());
             ex.printStackTrace();
         }
     }
+
 }
