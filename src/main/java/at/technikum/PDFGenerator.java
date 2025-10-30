@@ -1,5 +1,7 @@
 package at.technikum;
 
+import javafx.stage.FileChooser;
+import javafx.stage.Window;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
@@ -7,26 +9,47 @@ import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
 public class PDFGenerator {
 
-    // Simple PDF generator using PDFBox with safe handling of line breaks and page wrapping
-    public static void generate(String examName, List<String> lines) throws IOException {
+    /**
+     * 生成试卷 PDF，并让用户选择保存路径
+     * @param owner 当前窗口（UiApp 中传入 stage）
+     * @param examName 试卷名称
+     * @param lines 题目文本
+     */
+    public static void generate(Window owner, String examName, List<String> lines) throws IOException {
+
+        // 1️⃣ 让用户选择保存位置
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Save Exam PDF");
+        fileChooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("PDF Files", "*.pdf")
+        );
+        fileChooser.setInitialFileName("Exam_" + examName.replaceAll("\\s+", "_") + ".pdf");
+
+        File file = fileChooser.showSaveDialog(owner);
+        if (file == null) {
+            System.out.println("⚠️ User canceled save dialog.");
+            return;
+        }
+
+        // 2️⃣ 生成 PDF 文档
         try (PDDocument document = new PDDocument()) {
             PDPage page = new PDPage(PDRectangle.A4);
             document.addPage(page);
 
             float margin = 50;
-            float yStart = PDRectangle.A4.getHeight() - margin; // start near top
+            float yStart = PDRectangle.A4.getHeight() - margin;
             float width = PDRectangle.A4.getWidth() - 2 * margin;
             float fontSize = 12f;
             float leading = 1.2f * fontSize;
 
             PDType1Font font = PDType1Font.HELVETICA;
-
             PDPageContentStream content = new PDPageContentStream(document, page);
             content.beginText();
             content.setFont(font, fontSize);
@@ -35,7 +58,7 @@ public class PDFGenerator {
 
             float curY = yStart;
 
-            // write a title
+            // 写标题
             List<String> titleLines = wrapText("Exam: " + safeText(examName), font, fontSize, width);
             for (String t : titleLines) {
                 content.showText(t);
@@ -55,11 +78,10 @@ public class PDFGenerator {
                 }
             }
 
-            // blank line
+            // 空一行
             content.newLine(); curY -= leading;
 
             for (String raw : lines) {
-                // split incoming line on actual newline chars to be safe
                 String[] parts = raw.split("\r?\n");
                 for (String part : parts) {
                     List<String> wrapped = wrapText(safeText(part), font, fontSize, width);
@@ -81,7 +103,7 @@ public class PDFGenerator {
                         }
                     }
                 }
-                // add an empty line between questions for readability
+                // 每题后空一行
                 content.newLine(); curY -= leading;
                 if (curY <= margin) {
                     content.endText();
@@ -100,32 +122,29 @@ public class PDFGenerator {
             content.endText();
             content.close();
 
-            String safeName = examName == null || examName.isBlank() ? "exam" : examName.replaceAll("[^a-zA-Z0-9\\-_]", "_");
-            File dir = new File("pdfs");
-            if (!dir.exists()) {
-                dir.mkdirs();
+            // 保存到用户选择的路径
+            try (FileOutputStream out = new FileOutputStream(file)) {
+                document.save(out);
             }
-            File out = new File(dir, safeName + ".pdf");
-            document.save(out);
+
+            System.out.println("✅ PDF saved at: " + file.getAbsolutePath());
         }
     }
 
-    // Replace control chars that PDF font encoding can't handle; keep printable characters and spaces
+    // 安全文本处理
     private static String safeText(String s) {
         if (s == null) return "";
-        // remove non-printable control characters except TAB (0x09)
         return s.replaceAll("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]", " ");
     }
 
-    // very small word-wrap helper using font metrics
+    // 自动换行函数
     private static List<String> wrapText(String text, PDType1Font font, float fontSize, float maxWidth) throws IOException {
         List<String> result = new ArrayList<>();
         if (text == null || text.isEmpty()) { result.add(""); return result; }
 
         String[] words = text.split(" ");
         StringBuilder line = new StringBuilder();
-        for (int i = 0; i < words.length; i++) {
-            String w = words[i];
+        for (String w : words) {
             String candidate = line.length() == 0 ? w : line + " " + w;
             float size = font.getStringWidth(candidate) / 1000 * fontSize;
             if (size <= maxWidth) {
@@ -133,7 +152,6 @@ public class PDFGenerator {
                 line.append(candidate);
             } else {
                 if (line.length() == 0) {
-                    // single very long word, force-break
                     result.addAll(breakLongWord(w, font, fontSize, maxWidth));
                 } else {
                     result.add(line.toString());
@@ -153,7 +171,6 @@ public class PDFGenerator {
             cur.append(c);
             float size = font.getStringWidth(cur.toString()) / 1000 * fontSize;
             if (size > maxWidth) {
-                // remove last char and push
                 cur.setLength(cur.length() - 1);
                 out.add(cur.toString());
                 cur.setLength(0);

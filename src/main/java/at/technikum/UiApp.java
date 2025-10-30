@@ -507,8 +507,9 @@ public class UiApp extends Application {
             }
 
             // Generate PDF
-            PDFGenerator.generate(examName, lines);
-            info("Exam created and saved as PDF.");
+
+            PDFGenerator.generate(new Stage(), examName, lines);
+            info("Exam created and saved as PDF (user selected path).");
         } catch (Exception ex) {
             warn("Error generating exam: " + ex.getMessage());
             ex.printStackTrace();
