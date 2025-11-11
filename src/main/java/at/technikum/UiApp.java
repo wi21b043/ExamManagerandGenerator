@@ -265,10 +265,14 @@ public class UiApp extends Application {
         a.showAndWait().ifPresent(bt -> {
             if (bt == ButtonType.OK) {
                 try (var c = Database.get()) {
-                    store.deleteQuestionCategories(c, sel.getId());
-                    store.delete(c, sel.getId());
-                    loadFromDatabase();
-                    info("Question deleted.");
+                    QuestionStore store = new QuestionStore();
+                    boolean ok = store.deleteQuestion(c, sel.getId());
+                    if (ok) {
+                        info("Question deleted.");
+                        loadFromDatabase();           // 刷新列表
+                    } else {
+                        warn("Delete failed: question not found.");
+                    }
                 } catch (Exception ex) {
                     warn("Failed to delete: " + ex.getMessage());
                 }

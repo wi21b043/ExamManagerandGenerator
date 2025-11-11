@@ -80,6 +80,51 @@ public class QuestionStore {
         }
     }
 
+    // 统一删除：先删依赖表，再删 Questions（带事务 & 外键开启）
+    public boolean deleteQuestion(Connection c, int questionId) throws SQLException {
+        // 开启外键（已开启也不影响）
+        try (Statement s = c.createStatement()) { s.execute("PRAGMA foreign_keys = ON"); }
+
+        boolean oldAuto = c.getAutoCommit();
+        c.setAutoCommit(false);
+        try {
+            // 1) 删除已加入试卷的记录
+            try (PreparedStatement ps = c.prepareStatement(
+                    "DELETE FROM Exam_Questions WHERE question_id = ?")) {
+                ps.setInt(1, questionId);
+                ps.executeUpdate();
+            }
+            // 2) 删除题目与分类的关系
+            try (PreparedStatement ps = c.prepareStatement(
+                    "DELETE FROM Question_Categories WHERE question_id = ?")) {
+                ps.setInt(1, questionId);
+                ps.executeUpdate();
+            }
+            // 3) 删除所有历史版本（你原来没删这一张）
+            try (PreparedStatement ps = c.prepareStatement(
+                    "DELETE FROM QuestionVersions WHERE question_id = ?")) {
+                ps.setInt(1, questionId);
+                ps.executeUpdate();
+            }
+            // 4) 最后删题目本体
+            int affected;
+            try (PreparedStatement ps = c.prepareStatement(
+                    "DELETE FROM Questions WHERE id = ?")) {
+                ps.setInt(1, questionId);
+                affected = ps.executeUpdate();
+            }
+
+            c.commit();
+            return affected == 1;
+        } catch (SQLException ex) {
+            try { c.rollback(); } catch (SQLException ignore) {}
+            throw ex;
+        } finally {
+            try { c.setAutoCommit(oldAuto); } catch (SQLException ignore) {}
+        }
+    }
+
+
     //删除题目与类别关系（用于更新或删除）
     public void deleteQuestionCategories(Connection c, int qId) throws SQLException {
         String sql = "DELETE FROM Question_Categories WHERE question_id = ?";
@@ -160,37 +205,6 @@ public class QuestionStore {
 
     }
 
-
-
-    //按ID读取“最新版本”的题目（从视图 QuestionLatest 读取）
-    public Question getLatestById(Connection c, int id) throws SQLException {
-        String sql = """
-        SELECT
-          question_id AS id,
-          text,
-          type,
-          difficulty,
-          topic,
-          metadata,
-          latest_version
-        FROM QuestionLatest
-        WHERE question_id = ?
-    """;
-
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setInt(1, id);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) return null;
-
-                return new Question(
-                        rs.getInt("id"),
-                        rs.getString("difficulty"),
-                        rs.getString("text")
-                );
-
-            }
-        }
-    }
 
 
 
