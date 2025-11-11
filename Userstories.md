@@ -10,7 +10,7 @@ User Stories – Exam Manager and Generator
 
 ---
 
-## ✅ User Story Table
+##  User Story Table
 
 | ID        | As a...           | I want to...                                                                             | So that...                                             | Priority | Status      |
 | --------- | ----------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------ | -------- | ----------- |
@@ -30,7 +30,7 @@ User Stories – Exam Manager and Generator
 
 ---
 
-## 🧠 Notes & Constraints
+## Notes & Constraints
 
 - **Random logic:** Teacher defines how many questions per category to select.
 - **Categories:** Created and customized by users.

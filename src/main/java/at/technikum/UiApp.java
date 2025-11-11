@@ -13,24 +13,25 @@ import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.*;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
-import javafx.scene.input.MouseButton;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.MenuItem;
-
-
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Date;
-import java.util.stream.Collectors;
+import javafx.scene.control.Button;
+import javafx.scene.layout.VBox;
+import javafx.scene.control.TableView;
+import javafx.scene.control.Alert;
+import javafx.scene.control.ButtonType;
+
 
 public class UiApp extends Application {
 
     private final QuestionStore store = new QuestionStore();
 
-    // ===== Data structures =====
+    //Data structures
     static class Category { int id; String name; }
-    static class Question { int id; String text; String difficulty; }
     static class QuestionCategory { int question_id; int category_id; }
     static class Exam { int id; String name; String created_at; }
     static class ExamQuestion { int exam_id; int question_id; int position; }
@@ -42,7 +43,7 @@ public class UiApp extends Application {
     private final AtomicInteger catSeq = new AtomicInteger(1);
     private final AtomicInteger qSeq   = new AtomicInteger(1);
 
-    // ===== Table model =====
+    //Table model
     public static class QuestionRow {
         private final int id; private final String difficulty; private final String text; private final List<String> categories;
         public QuestionRow(int id, String difficulty, String text, List<String> categories){
@@ -109,7 +110,7 @@ public class UiApp extends Application {
         table.getColumns().addAll(cId, cDiff, cCat, cText);
         table.setItems(data);
 
-        // === 添加右键菜单 ===
+        //添加右键菜单
         MenuItem viewVersions = new MenuItem("View Versions");
         viewVersions.setOnAction(e -> showVersionHistory());
 
@@ -122,7 +123,7 @@ public class UiApp extends Application {
         stage.setScene(new Scene(root, 1080, 560)); stage.show();
     }
 
-    // ===== Load data from DB =====
+    //Load data from DB
     private void loadFromDatabase() {
         data.clear();
         loadCategoriesFromDb();
@@ -153,7 +154,8 @@ public class UiApp extends Application {
         }
     }
 
-    // ===== Add/Edit Question =====
+
+    //Add/Edit Question
     private final Set<String> selectedCats = new HashSet<>();
 
     private void openAddOrEditDialog(Stage owner, QuestionRow existing){
@@ -274,7 +276,9 @@ public class UiApp extends Application {
         });
     }
 
-    // ===== Category helpers =====
+
+
+    //Category helpers
     private void loadCategoriesFromDb() {
         Categories.clear();
         try (var c = Database.get()) {
@@ -339,7 +343,7 @@ public class UiApp extends Application {
         return false;
     }
 
-    // ===== Utils =====
+    //Utils
     private String opt(String s){ return s==null?"":s.trim(); }
     private void info(String msg){ alert(Alert.AlertType.INFORMATION, msg); }
     private void warn(String msg){ alert(Alert.AlertType.WARNING, msg); }
@@ -351,7 +355,9 @@ public class UiApp extends Application {
 
     public static void main(String[] args){ launch(args); }
 
-    // ===== Category Selection Dialog =====
+
+
+    //Category Selection Dialog
     private List<String> showCategorySelectionDialog(Stage owner) {
         Dialog<List<String>> dialog = new Dialog<>();
         dialog.initOwner(owner);
@@ -453,7 +459,7 @@ public class UiApp extends Application {
         dialog.showAndWait();
     }
 
-    // ===== Exam Preview + Replace + Export =====
+    // Exam Preview + Replace + Export
     private static class ExamQuestionItem {
         int id;
         String text;
@@ -487,10 +493,13 @@ public class UiApp extends Application {
                     if (count <= 0) continue;
 
                     PreparedStatement ps = conn.prepareStatement("""
-                        SELECT q.id, q.text, q.difficulty
-                        FROM Questions q
-                        JOIN Question_Categories qc ON q.id = qc.question_id
-                        WHERE qc.category_id = ? AND q.difficulty = ?
+                        SELECT
+                        ql.question_id AS id,
+                        ql.text,
+                        ql.difficulty
+                        FROM QuestionLatest ql
+                        JOIN Question_Categories qc ON ql.question_id = qc.question_id
+                        WHERE qc.category_id = ? AND ql.difficulty = ?
                         ORDER BY RANDOM() LIMIT ?
                     """);
                     ps.setInt(1, catId);
@@ -591,44 +600,187 @@ public class UiApp extends Application {
         stage.show();
     }
 
-    private void replaceQuestion(ExamQuestionItem item, ListView<ExamQuestionItem> listView) {
-        try (Connection conn = Database.get()) {
-            int catId = Categories.values().stream()
-                    .filter(c -> c.name.equals(item.category))
-                    .map(c -> c.id)
-                    .findFirst().orElse(-1);
-            if (catId == -1) return;
 
-            PreparedStatement ps = conn.prepareStatement("""
-                SELECT q.id, q.text, q.difficulty
-                FROM Questions q
-                JOIN Question_Categories qc ON q.id = qc.question_id
-                WHERE qc.category_id = ? AND q.difficulty = ? AND q.id != ?
-                ORDER BY RANDOM() LIMIT 1
-            """);
-            ps.setInt(1, catId);
-            ps.setString(2, item.difficulty);
-            ps.setInt(3, item.id);
-            ResultSet rs = ps.executeQuery();
-            if (rs.next()) {
-                ExamQuestionItem newQ = new ExamQuestionItem(
-                        rs.getInt("id"),
-                        rs.getString("text"),
-                        rs.getString("difficulty"),
-                        item.category
-                );
-                int idx = listView.getItems().indexOf(item);
-                listView.getItems().set(idx, newQ);
-                info("Question replaced successfully.");
-            } else {
-                warn("No alternative question found.");
+
+    // 精准换题：弹窗筛选同分类+同难度的候选题，选中后再替换
+    private void replaceQuestion(ExamQuestionItem item, ListView<ExamQuestionItem> listView) {
+        //由分类名查分类ID（避免依赖任何枚举）
+        int catId = findCategoryIdByName(item.category);
+        if (catId == -1) {
+            warn("Category not found: " + item.category);
+            return;
+        }
+
+        //弹出对话框：支持关键词过滤 + 候选题列表
+        Dialog<ExamQuestionItem> dlg = new Dialog<>();
+        dlg.setTitle("Select replacement for #" + item.id);
+        dlg.setHeaderText("Category: " + item.category + "  |  Difficulty: " + item.difficulty);
+        dlg.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        Button okBtn = (Button) dlg.getDialogPane().lookupButton(ButtonType.OK);
+        okBtn.setText("Replace");
+        okBtn.setDisable(true);
+
+        TextField tfKeyword = new TextField();
+        tfKeyword.setPromptText("keyword in question text...");
+        Button btnSearch = new Button("Search");
+
+        ListView<ExamQuestionItem> lv = new ListView<>();
+        lv.setPrefHeight(320);
+        lv.setCellFactory(v -> new ListCell<>() {
+            @Override protected void updateItem(ExamQuestionItem q, boolean empty) {
+                super.updateItem(q, empty);
+                if (empty || q == null) { setText(null); return; }
+                String s = q.text == null ? "" : q.text;
+                if (s.length() > 100) s = s.substring(0, 100) + "…";
+                setText("#" + q.id + " [" + q.difficulty + "] " + s);
             }
-        } catch (Exception ex) {
-            warn("Error replacing question: " + ex.getMessage());
+        });
+
+        VBox box = new VBox(8, new Label("Keyword"), tfKeyword, btnSearch,
+                new Label("Candidates"), lv);
+        box.setPadding(new Insets(10));
+        dlg.getDialogPane().setContent(box);
+
+        //行为：搜索 & 选择
+        Runnable doSearch = () -> {
+            try {
+                String kw = tfKeyword.getText();
+                if (kw != null && kw.isBlank()) kw = null;
+                List<ExamQuestionItem> candidates =
+                        queryCandidates(catId, item.difficulty, kw, item.id, item.category);
+                lv.getItems().setAll(candidates);
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                warn("Search failed: " + ex.getMessage());
+            }
+        };
+        btnSearch.setOnAction(e -> doSearch.run());
+        tfKeyword.setOnAction(e -> doSearch.run());
+        lv.getSelectionModel().selectedItemProperty()
+                .addListener((obs, a, b) -> okBtn.setDisable(b == null));
+
+        // 先加载一次默认候选
+        doSearch.run();
+
+        dlg.setResultConverter(bt -> (bt == ButtonType.OK) ? lv.getSelectionModel().getSelectedItem() : null);
+        ExamQuestionItem picked = dlg.showAndWait().orElse(null);
+        if (picked == null) return;
+
+        //应用替换（更新 UI）
+        int idx = listView.getItems().indexOf(item);
+        if (idx >= 0) {
+            listView.getItems().set(idx, picked);
+            info("Question replaced.");
         }
     }
 
-    // === 查看版本历史 ===
+
+    // 通过分类名拿到 category_id；找不到返回 -1
+    private int findCategoryIdByName(String categoryName) {
+        if (categoryName == null || categoryName.isBlank()) return -1;
+        try (var c = Database.get();
+             var ps = c.prepareStatement("SELECT id FROM Categories WHERE name = ? LIMIT 1")) {
+            ps.setString(1, categoryName.trim());
+            try (var rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getInt("id");
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+        return -1;
+    }
+
+    // 查询候选题：同分类 + 同难度，可选关键词，排除当前题
+    private List<ExamQuestionItem> queryCandidates(int categoryId,
+                                                   String difficulty,
+                                                   String keyword,
+                                                   int excludeQuestionId,
+                                                   String categoryNameForDisplay) throws java.sql.SQLException {
+        List<ExamQuestionItem> out = new ArrayList<>();
+        String base = """
+    SELECT
+      ql.question_id AS id,
+      ql.text,
+      ql.difficulty
+    FROM QuestionLatest ql
+    JOIN Question_Categories qc ON ql.question_id = qc.question_id
+    WHERE qc.category_id = ?
+      AND ql.difficulty = ?
+      AND ql.question_id <> ?
+""";
+
+        String tail = " ORDER BY ql.question_id DESC LIMIT 200";
+
+        String sql = (keyword == null || keyword.isBlank())
+                ? base + tail
+                : base + " AND LOWER(ql.text) LIKE ? " + tail;
+
+// 绑定参数顺序（保持和 WHERE 的顺序一致）
+        try (var conn = Database.get(); var ps = conn.prepareStatement(sql)) {
+            int i = 1;
+            ps.setInt(i++, categoryId);
+            ps.setString(i++, difficulty);
+            ps.setInt(i++, excludeQuestionId);
+            if (keyword != null && !keyword.isBlank()) {
+                ps.setString(i++, "%" + keyword.toLowerCase() + "%");
+            }
+
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new ExamQuestionItem(
+                            rs.getInt("id"),
+                            rs.getString("text"),
+                            rs.getString("difficulty"),
+                            categoryNameForDisplay
+                    ));
+                }
+            }
+        }
+
+        return out;
+    }
+
+
+
+    // 回滚按钮：选中一行 → 回滚 → 刷新历史和主表
+    private void onRollbackVersion(QuestionStore store, int questionId, TableView<QuestionStore.QuestionVersion> tbl) {
+        var sel = tbl.getSelectionModel().getSelectedItem();
+        if (sel == null) {
+            warn("Please select a version first.");
+            return;
+        }
+
+        Alert alert = new Alert(
+                Alert.AlertType.CONFIRMATION,
+                "Are you sure you want to roll back question ID " + questionId +
+                        " to version v" + sel.getVersion() + "?\n(This will create a new version in the history.)",
+                ButtonType.OK, ButtonType.CANCEL
+        );
+        alert.setHeaderText("Confirm Rollback");
+        var res = alert.showAndWait().orElse(ButtonType.CANCEL);
+        if (res != ButtonType.OK) return;
+
+        try (Connection c2 = Database.get()) {
+            boolean ok = store.rollbackToVersion(c2, questionId, sel.getVersion());
+            if (ok) {
+                //刷新历史列表
+                var refreshed = store.findVersions(c2, questionId);
+                tbl.setItems(FXCollections.observableArrayList(refreshed));
+                //刷新主页
+                loadFromDatabase();
+                info("Rolled back to v" + sel.getVersion() + " and created a new current version.");
+            } else {
+                warn("Rollback failed: target version not found.");
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            warn("Rollback error: " + ex.getMessage());
+        }
+    }
+
+
+
+    //查看版本历史
     private void showVersionHistory() {
         QuestionRow selected = table.getSelectionModel().getSelectedItem();
         if (selected == null) {
@@ -657,10 +809,10 @@ public class UiApp extends Application {
             colDiff.setCellValueFactory(new PropertyValueFactory<>("difficulty"));
 
             TableColumn<QuestionStore.QuestionVersion, String> colCreated = new TableColumn<>("Created");
-            colCreated.setCellValueFactory(new PropertyValueFactory<>("createdAt"));
+            colCreated.setCellValueFactory(new PropertyValueFactory<>("created"));
 
             TableColumn<QuestionStore.QuestionVersion, String> colUpdated = new TableColumn<>("Updated");
-            colUpdated.setCellValueFactory(new PropertyValueFactory<>("updatedAt"));
+            colUpdated.setCellValueFactory(new PropertyValueFactory<>("updated"));
 
             TableColumn<QuestionStore.QuestionVersion, String> colText = new TableColumn<>("Text");
             colText.setCellValueFactory(new PropertyValueFactory<>("text"));
@@ -669,7 +821,14 @@ public class UiApp extends Application {
             tbl.getColumns().addAll(colVer, colDiff, colCreated, colUpdated, colText);
             tbl.setPrefHeight(300);
 
-            dlg.getDialogPane().setContent(tbl);
+            // 回滚按钮
+            Button btnRollback = new Button("Reroll to the selected version");
+            btnRollback.setOnAction(e -> onRollbackVersion(store, selected.getId(), tbl));  // 事件放到一个小方法里
+
+            VBox box = new VBox(8, btnRollback, tbl);
+            box.setPadding(new Insets(10));
+            dlg.getDialogPane().setContent(box);
+
             dlg.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
             dlg.showAndWait();
 
@@ -678,5 +837,6 @@ public class UiApp extends Application {
             ex.printStackTrace();
         }
     }
+
 
 }

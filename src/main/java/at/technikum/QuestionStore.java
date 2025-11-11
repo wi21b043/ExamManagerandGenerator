@@ -9,15 +9,14 @@ public class QuestionStore {
     // 读取所有问题（只取最新版本）
     public List<Question> findAll(Connection c) throws SQLException {
         String sql = """
-            SELECT q1.id, q1.difficulty, q1.text
-            FROM Questions q1
-            WHERE q1.version = (
-                SELECT MAX(q2.version)
-                FROM Questions q2
-                WHERE q2.id = q1.id
-            )
-            ORDER BY q1.id
-        """;
+    SELECT
+      question_id AS id,
+      difficulty,
+      text
+    FROM QuestionLatest
+    ORDER BY question_id
+    """;
+
         try (PreparedStatement ps = c.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
             List<Question> out = new ArrayList<>();
@@ -32,7 +31,7 @@ public class QuestionStore {
         }
     }
 
-    // 插入新问题（初始版本 = 1）
+    // 插入新问题（初始版本 = V1）
     public int insert(Connection c, String text, String type, String difficulty) throws SQLException {
         String sql = "INSERT INTO Questions (text, type, difficulty, version, created_at, updated_at) VALUES (?,?,?,1,datetime('now'),datetime('now'))";
         try (PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
@@ -46,60 +45,42 @@ public class QuestionStore {
         }
     }
 
-    /**
-     * 更新题目时自动保留旧版本：
-     * 不覆盖旧记录，而是新增一条新记录（新的 id，旧版本保留）
-     */
-    public void update(Connection c, int oldId, String text, String type, String difficulty) throws SQLException {
-        // Step 1: 获取旧版本号
-        String sel = "SELECT version, created_at FROM Questions WHERE id=? ORDER BY version DESC LIMIT 1";
-        int newVersion = 1;
-        String createdAt = null;
-        try (PreparedStatement ps = c.prepareStatement(sel)) {
-            ps.setInt(1, oldId);
-            ResultSet rs = ps.executeQuery();
-            if (rs.next()) {
-                newVersion = rs.getInt("version") + 1;
-                createdAt = rs.getString("created_at");
-            }
-        }
-
-        // Step 2: 插入新记录（不复用旧 id，让 SQLite 自动生成）
-        String ins = "INSERT INTO Questions (text, type, difficulty, version, created_at, updated_at) VALUES (?,?,?,?,?,datetime('now'))";
-        try (PreparedStatement ps = c.prepareStatement(ins)) {
+    // 编辑题目
+    public void update(Connection c, int id, String text, String type, String difficulty) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "UPDATE Questions SET text = ?, type = ?, difficulty = ?, updated_at = datetime('now') WHERE id = ?")) {
             ps.setString(1, text);
             ps.setString(2, type);
             ps.setString(3, difficulty);
-            ps.setInt(4, newVersion);
-            ps.setString(5, createdAt == null ? new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) : createdAt);
-            ps.executeUpdate();
+            ps.setInt(4, id);
+            if (ps.executeUpdate() != 1) {
+                throw new SQLException("No question with id = " + id);
+            }
         }
-
-        System.out.println("✅ New version inserted successfully (old ID " + oldId + " → version " + newVersion + ")");
     }
 
     // 删除题目所有版本（同时清理外键依赖）
     public void delete(Connection c, int id) throws SQLException {
-        // Step 1: 删除 Exam_Questions 中引用的记录
+        //删除 Exam_Questions 中引用的记录
         try (PreparedStatement ps = c.prepareStatement("DELETE FROM Exam_Questions WHERE question_id = ?")) {
             ps.setInt(1, id);
             ps.executeUpdate();
         }
 
-        // Step 2: 删除 Question_Categories 中引用的记录
+        //删除 Question_Categories 中引用的记录
         try (PreparedStatement ps = c.prepareStatement("DELETE FROM Question_Categories WHERE question_id = ?")) {
             ps.setInt(1, id);
             ps.executeUpdate();
         }
 
-        // Step 3: 删除 Questions 表中的所有版本
+        //删除 Questions 表中的所有版本
         try (PreparedStatement ps = c.prepareStatement("DELETE FROM Questions WHERE id = ?")) {
             ps.setInt(1, id);
             ps.executeUpdate();
         }
     }
 
-    // 删除题目与类别关系（用于更新或删除）
+    //删除题目与类别关系（用于更新或删除）
     public void deleteQuestionCategories(Connection c, int qId) throws SQLException {
         String sql = "DELETE FROM Question_Categories WHERE question_id = ?";
         try (PreparedStatement ps = c.prepareStatement(sql)) {
@@ -108,7 +89,7 @@ public class QuestionStore {
         }
     }
 
-    // 插入题目与类别的关联（避免重复）
+    //插入题目与类别的关联（避免重复）
     public void linkQuestionCategory(Connection c, int qId, int cId) throws SQLException {
         String sql = "INSERT OR IGNORE INTO Question_Categories (question_id, category_id) VALUES (?, ?)";
         try (PreparedStatement ps = c.prepareStatement(sql)) {
@@ -118,34 +99,41 @@ public class QuestionStore {
         }
     }
 
-    // === 新增：查询指定题目的所有版本 ===
-    public List<QuestionVersion> findVersions(Connection c, int baseId) throws SQLException {
+
+    //查询指定题目的所有版本
+    public List<QuestionVersion> findVersions(Connection c, int questionId) throws SQLException {
         String sql = """
-            SELECT id, text, difficulty, version, created_at, updated_at
-            FROM Questions
-            WHERE id = ? OR (
-                text = (SELECT text FROM Questions WHERE id = ?)
-            )
-            ORDER BY version DESC
-        """;
-        List<QuestionVersion> list = new ArrayList<>();
+        SELECT
+          question_id AS id,
+          text,
+          difficulty,
+          version,
+          created_at
+        FROM QuestionVersions
+        WHERE question_id = ?
+        ORDER BY version DESC
+    """;
+
         try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setInt(1, baseId);
-            ps.setInt(2, baseId);
-            ResultSet rs = ps.executeQuery();
-            while (rs.next()) {
-                list.add(new QuestionVersion(
-                        rs.getInt("id"),
-                        rs.getString("text"),
-                        rs.getString("difficulty"),
-                        rs.getInt("version"),
-                        rs.getString("created_at"),
-                        rs.getString("updated_at")
-                ));
+            ps.setInt(1, questionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<QuestionVersion> list = new ArrayList<>();
+                while (rs.next()) {
+                    int id          = rs.getInt("id");
+                    String text     = rs.getString("text");
+                    String diff     = rs.getString("difficulty");
+                    int ver         = rs.getInt("version");
+                    String created  = rs.getString("created_at");
+
+                    // 你们的 QuestionVersion 构造函数是 (id, text, difficulty, version, createdAt, updatedAt)
+                    // 版本表暂时没有 updated_at，这里先用 created_at 占位
+                    list.add(new QuestionVersion(id, text, diff, ver, created, created));
+                }
+                return list;
             }
         }
-        return list;
     }
+
 
     // 内部数据模型类
     public static class QuestionVersion {
@@ -163,5 +151,91 @@ public class QuestionStore {
             this.createdAt = createdAt;
             this.updatedAt = updatedAt;
         }
+        public int getVersion() { return version; }
+        public String getDifficulty() { return difficulty; }
+        public String getText() { return text; }
+
+        public String getCreated() { return createdAt; }
+        public String getUpdated() { return updatedAt; }
+
     }
+
+
+
+    //按ID读取“最新版本”的题目（从视图 QuestionLatest 读取）
+    public Question getLatestById(Connection c, int id) throws SQLException {
+        String sql = """
+        SELECT
+          question_id AS id,
+          text,
+          type,
+          difficulty,
+          topic,
+          metadata,
+          latest_version
+        FROM QuestionLatest
+        WHERE question_id = ?
+    """;
+
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+
+                return new Question(
+                        rs.getInt("id"),
+                        rs.getString("difficulty"),
+                        rs.getString("text")
+                );
+
+            }
+        }
+    }
+
+
+
+    //回滚：把题目恢复到指定版本（会触发生成一个新的版本号）
+    public boolean rollbackToVersion(Connection c, int questionId, int targetVersion) throws SQLException {
+        //读出目标版本的内容
+        String selectSql = """
+        SELECT text, type, difficulty, topic, metadata
+        FROM QuestionVersions
+        WHERE question_id = ? AND version = ?
+    """;
+
+        try (PreparedStatement ps1 = c.prepareStatement(selectSql)) {
+            ps1.setInt(1, questionId);
+            ps1.setInt(2, targetVersion);
+            try (ResultSet rs = ps1.executeQuery()) {
+                if (!rs.next()) return false; // 该版本不存在
+
+                String text       = rs.getString("text");
+                String type       = rs.getString("type");
+                String difficulty = rs.getString("difficulty");
+                String topic      = rs.getString("topic");
+                String metadata   = rs.getString("metadata");
+
+                //覆盖 Questions 当前内容（触发器会自动写入新版本）
+                String updateSql = """
+                UPDATE Questions
+                SET text = ?, type = ?, difficulty = ?, topic = ?, metadata = ?
+                WHERE id = ?
+            """;
+                try (PreparedStatement ps2 = c.prepareStatement(updateSql)) {
+                    ps2.setString(1, text);
+                    ps2.setString(2, type);
+                    ps2.setString(3, difficulty);
+                    ps2.setString(4, topic);
+                    ps2.setString(5, metadata);
+                    ps2.setInt(6, questionId);
+                    return ps2.executeUpdate() == 1;
+                }
+            }
+        }
+    }
+
+
+
+
+
 }

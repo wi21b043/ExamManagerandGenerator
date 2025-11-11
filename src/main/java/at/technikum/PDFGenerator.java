@@ -15,16 +15,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class PDFGenerator {
-
-    /**
-     * 生成试卷 PDF，并让用户选择保存路径
-     * @param owner 当前窗口（UiApp 中传入 stage）
-     * @param examName 试卷名称
-     * @param lines 题目文本
-     */
     public static void generate(Window owner, String examName, List<String> lines) throws IOException {
 
-        // 1️⃣ 让用户选择保存位置
+        //让用户选择保存位置
         FileChooser fileChooser = new FileChooser();
         fileChooser.setTitle("Save Exam PDF");
         fileChooser.getExtensionFilters().add(
@@ -34,11 +27,11 @@ public class PDFGenerator {
 
         File file = fileChooser.showSaveDialog(owner);
         if (file == null) {
-            System.out.println("⚠️ User canceled save dialog.");
+            System.out.println("User canceled save dialog.");
             return;
         }
 
-        // 2️⃣ 生成 PDF 文档
+        //生成 PDF 文档
         try (PDDocument document = new PDDocument()) {
             PDPage page = new PDPage(PDRectangle.A4);
             document.addPage(page);
@@ -127,7 +120,7 @@ public class PDFGenerator {
                 document.save(out);
             }
 
-            System.out.println("✅ PDF saved at: " + file.getAbsolutePath());
+            System.out.println("PDF saved at: " + file.getAbsolutePath());
         }
     }
 
