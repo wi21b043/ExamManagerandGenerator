@@ -1,0 +1,37 @@
+<mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36" version="28.2.7">
+    <diagram id="schema" name="Exam Manager DB Schema">
+        <mxGraphModel dx="872" dy="550" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+            <root>
+                <mxCell id="0" />
+                <mxCell id="1" parent="0" />
+                <mxCell id="questions" value="Questions&#xa;──────────────&#xa;id (PK)&#xa;text&#xa;type&#xa;difficulty&#xa;topic&#xa;metadata&#xa;created_at&#xa;updated_at&#xa;version" style="shape=rectangle;whiteSpace=wrap;rounded=1;strokeColor=#000000;fillColor=#dae8fc;" parent="1" vertex="1">
+                    <mxGeometry x="120" y="200" width="200" height="220" as="geometry" />
+                </mxCell>
+                <mxCell id="categories" value="Categories&#xa;──────────────&#xa;id (PK)&#xa;name" style="shape=rectangle;whiteSpace=wrap;rounded=1;strokeColor=#000000;fillColor=#ffe6cc;" parent="1" vertex="1">
+                    <mxGeometry x="450" y="100" width="200" height="100" as="geometry" />
+                </mxCell>
+                <mxCell id="qc" value="Question_Categories&#xa;──────────────&#xa;question_id (FK)&#xa;category_id (FK)" style="shape=rectangle;whiteSpace=wrap;rounded=1;strokeColor=#000000;fillColor=#fff2cc;" parent="1" vertex="1">
+                    <mxGeometry x="450" y="240" width="200" height="100" as="geometry" />
+                </mxCell>
+                <mxCell id="exams" value="Exams&#xa;──────────────&#xa;id (PK)&#xa;title&#xa;created_at" style="shape=rectangle;whiteSpace=wrap;rounded=1;strokeColor=#000000;fillColor=#d5e8d4;" parent="1" vertex="1">
+                    <mxGeometry x="120" y="480" width="200" height="120" as="geometry" />
+                </mxCell>
+                <mxCell id="eq" value="Exam_Questions&#xa;──────────────&#xa;exam_id (FK)&#xa;question_id (FK)&#xa;order_index" style="shape=rectangle;whiteSpace=wrap;rounded=1;strokeColor=#000000;fillColor=#fff2cc;" parent="1" vertex="1">
+                    <mxGeometry x="450" y="480" width="200" height="120" as="geometry" />
+                </mxCell>
+                <mxCell id="edge1" style="endArrow=classic;strokeColor=#000000;" parent="1" source="questions" target="qc" edge="1">
+                    <mxGeometry relative="1" as="geometry" />
+                </mxCell>
+                <mxCell id="edge2" style="endArrow=classic;strokeColor=#000000;" parent="1" source="categories" target="qc" edge="1">
+                    <mxGeometry relative="1" as="geometry" />
+                </mxCell>
+                <mxCell id="edge3" style="endArrow=classic;strokeColor=#000000;" parent="1" source="questions" target="eq" edge="1">
+                    <mxGeometry relative="1" as="geometry" />
+                </mxCell>
+                <mxCell id="edge4" style="endArrow=classic;strokeColor=#000000;" parent="1" source="exams" target="eq" edge="1">
+                    <mxGeometry relative="1" as="geometry" />
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
